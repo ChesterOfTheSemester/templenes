@@ -105,17 +105,14 @@ U8 pull8() {
 
 U0 reset6502() {
 	pc = readRAM(0xFFFC) (U16) | (readRAM(0xFFFD) (U16) << 8);
-
 	instructions = 0;
 	clockgoal6502 = 0;
 	clockticks6502 = 0;
-
 	a = 0;
 	x = 0;
 	y = 0;
 	sp = 0xFD;
-	//cpustatus |= FLAG_CONSTANT;
-	cpustatus = FLAG_CONSTANT;
+	cpustatus |= FLAG_CONSTANT;
 }
 
 //addressing mode functions, calculates effective addresses
@@ -715,7 +712,6 @@ U0 nmi6502() {
 	push16(pc);
 	push8(cpustatus);
 	cpustatus |= FLAG_INTERRUPT;
-	//cpustatus &= FLAG_INTERRUPT;
 	pc = readRAM(0xFFFA) (U16) | (readRAM(0xFFFB) (U16) << 8);
 }
 

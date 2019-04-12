@@ -56,20 +56,20 @@ U0 verinc() {
 	}
 }
 
-U0 setPixelColor(I64 x, I64 y, I64 color) {
+U0 setPixelColor(I64 x, I64 y, I64 color, CDC *dc=gameCanvas) {
 	U8 *pixel=TG_Canvas->body;
 	I64 dx = 0, dy=0;
 	for(dx=0; dx<pixelWidth; ++dx) {
 		for(dy=0; dy<pixelHeight; ++dy) {
 			if (fit_screen)
 			{
-				gameCanvas->color = 16+color.u8[0];
-				GrPlot(gameCanvas, x+32, y);
+				dc->color = 16+color.u8[0];
+				GrPlot(dc, x+32, y);
 			}
 			else
 			{
-				gameCanvas->color = 16+color.u8[0];
-				GrPlot(gameCanvas, x+32, y-24);
+				dc->color = 16+color.u8[0];
+				GrPlot(dc, x+32, y-24);
 			}
 		}
 	}
@@ -81,6 +81,21 @@ I64 getActiveSpriteIndex(PPU2C02state *state) {
 		if( state->sprites[i].x == 0 && state->sprites[i].shifts_remaining > 0 ) {
 			U8 bit_0 = (state->sprites[i].shift_register_0 & (1 << 7)) >> 7;
 			U8 bit_1 = (state->sprites[i].shift_register_1 & (1 << 7)) >> 7;
+			U8 bg_color_index = (bit_1 << 1) | bit_0;
+			if( bg_color_index > 0 ) {
+				return i;
+			}
+		}
+	}
+	return -1;
+}
+
+I64 getActiveSpriteIndex16(PPU2C02state *state) {
+	U8 i;
+	for(i=0; i<state->num_sprites; ++i) {
+		if( state->sprites[i].x == 0 && state->sprites[i].shifts_remaining > 0 ) {
+			U8 bit_0 = (state->sprites[i].shift_register_2 & (1 << 7)) >> 7;
+			U8 bit_1 = (state->sprites[i].shift_register_3 & (1 << 7)) >> 7;
 			U8 bg_color_index = (bit_1 << 1) | bit_0;
 			if( bg_color_index > 0 ) {
 				return i;
@@ -130,6 +145,18 @@ U0 renderPixel(PPU2C02state *state) {
 	bit_1 = (state->AT_shift_1 & (1 << shift)) >> shift;
 	U8 bg_at_index = (bit_1 << 1) | bit_0;
 
+	U16 palette_base;
+	U8 color_value;
+	U32 color;
+
+	I64 ofs = 0;
+
+	if (MMU.RAM[0x2000] & (1 << 5) != 0)
+	{
+		ofs = 8;
+	}
+
+	//8x8
 	//get sprite color index and active sprite
 	U8 sprite_color_index = 0;
 	I64 active_sprite_index = getActiveSpriteIndex(state);
@@ -139,33 +166,43 @@ U0 renderPixel(PPU2C02state *state) {
 		sprite_color_index = (bit_1 << 1) | bit_0;
 	}
 
-	U16 palette_base;
-	U8 color_value;
-	U32 color;
-
 	//draw the pixel on the screen, depending on color and priority
 	if( bg_color_index == 0 && sprite_color_index == 0 ) {
-		//setPixelColor(state->dot, state->scanline, ppu_colors[MMU.VRAM[0x3F00]]);
 		setPixelColor(state->dot, state->scanline, MMU.VRAM[0x3F00]);
 	}
 	else if( (sprite_color_index != 0 && bg_color_index == 0) ||
 	         (sprite_color_index != 0 && bg_color_index != 0 && (state->sprites[active_sprite_index].byte2 & (1<<5)) == 0) ) {
-		//assert( active_sprite_index != -1 );
 		palette_base = getSpritePaletteBase(state->sprites[active_sprite_index].attribute);
 		color_value = readVRAM(palette_base + sprite_color_index);
-		//color = ppu_colors[color_value];
 		setPixelColor(state->dot, state->scanline, color_value);
 	}
 	else {
 		palette_base = getBackgroundPaletteBase(bg_at_index);
 		color_value = readVRAM(palette_base + bg_color_index);
-		//color = ppu_colors[color_value];
 		setPixelColor(state->dot, state->scanline, color_value);
 	}
 
 	//handle sprite zero hit
 	if( active_sprite_index != -1 && state->sprites[active_sprite_index].sprite_index == 0 && sprite_color_index != 0 && bg_color_index == 0 ) {
 		state->sprite_zero_hit = 1;
+	}
+
+	if (MMU.RAM[0x2000] & (1 << 5) != 0)
+	{ //8x16
+		sprite_color_index = 0;
+		active_sprite_index = getActiveSpriteIndex16(state);
+		if( active_sprite_index != -1 )
+		{
+			bit_0 = (state->sprites[active_sprite_index].shift_register_2 & (1 << 7)) >> 7;
+			bit_1 = (state->sprites[active_sprite_index].shift_register_3 & (1 << 7)) >> 7;
+			sprite_color_index = (bit_1 << 1) | bit_0;
+		}
+		if (sprite_color_index)
+		{
+			palette_base = getSpritePaletteBase(state->sprites[active_sprite_index].attribute);
+			color_value = readVRAM(palette_base + sprite_color_index);
+			setPixelColor(state->dot, state->scanline, color_value, Canvas16);
+		}
 	}
 }
 
@@ -179,39 +216,90 @@ U0 loadScanlineSprites(PPU2C02state *state) {
 	for(i=0; i<8; ++i) {
 		state->sprites[i].shift_register_0 = 0;
 		state->sprites[i].shift_register_1 = 0;
+		state->sprites[i].shift_register_2 = 0;
+		state->sprites[i].shift_register_3 = 0;
 	}
 
 	for(i=0x00; i<0xFF; i+=4) {
-		//assert( (MMU.RAM[0x2000] & (1 << 5)) == 0 ); //only allow 8x8 sprites
 
 		U8 y = readSPRRAM(i+0)+1;
 		U8 pattern_index = readSPRRAM(i+1);
 		U8 byte2 = readSPRRAM(i+2);
 		U8 x = readSPRRAM(i+3);
 
+		if (MMU.RAM[0x2000] & (1 << 5) != 0)
+		{
+			y += 8;
+		}
+
 		if( y <= state->scanline && y+8 > state->scanline ) {
 
 			U16 pattern_base = 0x0000;
-			if( (MMU.RAM[0x2000] & (1 << 3)) ) {
-				pattern_base = 0x1000;
+
+			if (MMU.RAM[0x2000] & (1 << 5) != 0)
+			{ //8x16
+				if( (pattern_index & 1) ) {
+					pattern_base = 0x1000;
+				}
+				else
+				{
+					pattern_base += 16;
+				}
+			}
+			else
+			{ //8x8
+				if( (MMU.RAM[0x2000] & (1 << 3)) ) {
+					pattern_base = 0x1000;
+				}
 			}
 
 			U16 palette_base = getSpritePaletteBase(byte2 & 3);
 
+			U8 pattern_0;
+			U8 pattern_1;
+			U8 pattern_2;
+			U8 pattern_3;
+
 			I64 row = state->scanline-y;
-			U8 pattern_0 = MMU.VRAM[pattern_base + (pattern_index*16+row)];
-			U8 pattern_1 = MMU.VRAM[pattern_base + (pattern_index*16+row+8)];
+			if (MMU.RAM[0x2000] & (1 << 5) != 0)
+			{
+				pattern_0 = MMU.VRAM[pattern_base + (pattern_index*16+row)];
+				pattern_1 = MMU.VRAM[pattern_base + (pattern_index*16+row+8)];
+				pattern_2 = MMU.VRAM[pattern_base + (pattern_index*16+row-16)];
+				pattern_3 = MMU.VRAM[pattern_base + (pattern_index*16+row-8)];
+			}
+			else
+			{
+				pattern_0 = MMU.VRAM[pattern_base + (pattern_index*16+row)];
+				pattern_1 = MMU.VRAM[pattern_base + (pattern_index*16+row+8)];
+				pattern_2 = MMU.VRAM[pattern_base + (pattern_index*16+row-16)];
+				pattern_3 = MMU.VRAM[pattern_base + (pattern_index*16+row-8)];
+			}
 
 			//flip y
 			if( byte2 & (1 << 7) ) {
-				pattern_0 = MMU.VRAM[pattern_base + (pattern_index*16+(7-row))];
-				pattern_1 = MMU.VRAM[pattern_base + (pattern_index*16+(7-row)+8)];
+				if (MMU.RAM[0x2000] & (1 << 5) != 0)
+				{
+					pattern_2 = MMU.VRAM[pattern_base + (pattern_index*16+(7-row))];
+					pattern_3 = MMU.VRAM[pattern_base + (pattern_index*16+(7-row)+8)];
+					pattern_0 = MMU.VRAM[pattern_base + (pattern_index*16+(7-row)-16)];
+					pattern_1 = MMU.VRAM[pattern_base + (pattern_index*16+(7-row)-8)];
+				}
+				else
+				{
+					pattern_0 = MMU.VRAM[pattern_base + (pattern_index*16+(7-row))];
+					pattern_1 = MMU.VRAM[pattern_base + (pattern_index*16+(7-row)+8)];
+					pattern_2 = MMU.VRAM[pattern_base + (pattern_index*16+(7-row)-16)];
+					pattern_3 = MMU.VRAM[pattern_base + (pattern_index*16+(7-row)-8)];
+				}
 			}
 
 			//flip x, reverse the bits in the patterns
 			if(byte2 & (1 << 6) ) {
 				U8 new_pattern_0 = 0;
 				U8 new_pattern_1 = 0;
+				U8 new_pattern_2 = 0;
+				U8 new_pattern_3 = 0;
 				I64 bit;
 				for(bit=0; bit<8; ++bit) {
 					new_pattern_0 <<= 1;
@@ -220,9 +308,17 @@ U0 loadScanlineSprites(PPU2C02state *state) {
 					new_pattern_1 <<= 1;
 					new_pattern_1 |= (pattern_1&1);
 					pattern_1 >>= 1;
+					new_pattern_2 <<= 1;
+					new_pattern_2 |= (pattern_2&1);
+					pattern_2 >>= 1;
+					new_pattern_3 <<= 1;
+					new_pattern_3 |= (pattern_3&1);
+					pattern_3 >>= 1;
 				}
 				pattern_0 = new_pattern_0;
 				pattern_1 = new_pattern_1;
+				pattern_2 = new_pattern_2;
+				pattern_3 = new_pattern_3;
 			}
 
 			state->sprites[state->num_sprites].sprite_index = i;
@@ -230,6 +326,8 @@ U0 loadScanlineSprites(PPU2C02state *state) {
 			state->sprites[state->num_sprites].attribute = (byte2 & 3);
 			state->sprites[state->num_sprites].shift_register_0 = pattern_0;
 			state->sprites[state->num_sprites].shift_register_1 = pattern_1;
+			state->sprites[state->num_sprites].shift_register_2 = pattern_2;
+			state->sprites[state->num_sprites].shift_register_3 = pattern_3;
 			state->sprites[state->num_sprites].shifts_remaining = 8;
 			state->sprites[state->num_sprites].byte2 = byte2;
 
@@ -248,16 +346,28 @@ U0 updatePPUrenderingData(PPU2C02state *state) {
 	state->bitmap_shift_0 &= ~1;
 	state->bitmap_shift_1 &= ~1;
 
+	state->bitmap_shift_2 <<= 1;
+	state->bitmap_shift_3 <<= 1;
+	state->bitmap_shift_2 &= ~1;
+	state->bitmap_shift_3 &= ~1;
+
 	state->AT_shift_0 <<= 1;
 	state->AT_shift_1 <<= 1;
 	state->AT_shift_0 &= ~1;
 	state->AT_shift_1 &= ~1;
+
+	state->AT_shift_2 <<= 1;
+	state->AT_shift_3 <<= 1;
+	state->AT_shift_2 &= ~1;
+	state->AT_shift_3 &= ~1;
 
 	I64 i;
 	for(i=0; i<state->num_sprites; ++i) {
 		if( state->sprites[i].x == 0 && state->sprites[i].shifts_remaining > 0) {
 			state->sprites[i].shift_register_0 <<= 1;
 			state->sprites[i].shift_register_1 <<= 1;
+			state->sprites[i].shift_register_2 <<= 1;
+			state->sprites[i].shift_register_3 <<= 1;
 			state->sprites[i].shifts_remaining -= 1;
 		}
 		else {
@@ -267,6 +377,13 @@ U0 updatePPUrenderingData(PPU2C02state *state) {
 }
 
 U8 getAttributeTableValue(U16 attribute_address, U8 x, U8 y) {
+	if (controlByte1 & 1)
+	{
+		if (attribute_address >= 0x2800)
+		{
+			attribute_address -= 0x800;
+		}
+	}
 	U8 attribute_value = readVRAM(attribute_address);
 
 	U8 bottom = 1;
@@ -306,15 +423,19 @@ U0 fetchAttribute(PPU2C02state *state) {
 	U8 at = getAttributeTableValue(attribute_address, (MMU.VRAM_address & 0x001F)*8, ((MMU.VRAM_address & (0x001F << 5)) >> 5)*8);
 	if(at & 1) {
 		state->AT_shift_0_latch = 0xFF;
+		state->AT_shift_2_latch = 0xFF;
 	}
 	else {
 		state->AT_shift_0_latch = 0x00;
+		state->AT_shift_2_latch = 0x00;
 	}
 	if(at & 2) {
 		state->AT_shift_1_latch = 0xFF;
+		state->AT_shift_3_latch = 0xFF;
 	}
 	else {
 		state->AT_shift_1_latch = 0x00;
+		state->AT_shift_3_latch = 0x00;
 	}
 }
 
@@ -334,7 +455,7 @@ U0 handleVisibleScanline(PPU2C02state *state) {
 		loadScanlineSprites(state);
 		return;
 	}
-	if( !rendering_enabled() ) {
+	if( !rendering_enabled ) {
 		return;
 	}
 
@@ -347,6 +468,13 @@ U0 handleVisibleScanline(PPU2C02state *state) {
 	if( MMU.RAM[0x2000] & (1 << 4) ) {
 		pattern_base = 0x1000;
 	}
+	if (controlByte1 & 1)
+	{ //Vertical mirroring
+		if (state->nametable_base >= 0x2800)
+		{
+			state->nametable_base -= 0x800;
+		}
+	}
 	U16 pattern_index = MMU.VRAM[state->nametable_base];
 	U8 row = ((MMU.VRAM_address&0x7000) >> 12);
 
@@ -357,9 +485,13 @@ U0 handleVisibleScanline(PPU2C02state *state) {
 		case 0:
 			state->bitmap_shift_0 |= state->bitmap_shift_0_latch;
 			state->bitmap_shift_1 |= state->bitmap_shift_1_latch;
+			state->bitmap_shift_2 |= state->bitmap_shift_2_latch;
+			state->bitmap_shift_3 |= state->bitmap_shift_3_latch;
 
 			state->AT_shift_0 |= state->AT_shift_0_latch;
 			state->AT_shift_1 |= state->AT_shift_1_latch;
+			state->AT_shift_2 |= state->AT_shift_2_latch;
+			state->AT_shift_3 |= state->AT_shift_3_latch;
 
 			horinc();
 			break;
@@ -371,9 +503,11 @@ U0 handleVisibleScanline(PPU2C02state *state) {
 			break;
 		case 5:
 			state->bitmap_shift_0_latch = MMU.VRAM[pattern_base + pattern_index*16+row];
+			state->bitmap_shift_2_latch = MMU.VRAM[pattern_base + pattern_index*16+row-16];
 			break;
 		case 7:
 			state->bitmap_shift_1_latch = MMU.VRAM[pattern_base + pattern_index*16+row+8];
+			state->bitmap_shift_3_latch = MMU.VRAM[pattern_base + pattern_index*16+row-8];
 			break;
 		}
 
@@ -395,7 +529,6 @@ U8 PPUcycle(PPU2C02state *state) {
 
 	if( state->nmi_output && state->nmi_occurred ) {
 		state->nmi_occurred = 0;
-		//NMI(&CPU_state);
 		nmi6502;
 	}
 
@@ -407,12 +540,12 @@ U8 PPUcycle(PPU2C02state *state) {
 	}
 	state->scanline %= 262;
 	//skip first cycle on odd frames
-	if(state->scanline == 0 && state->dot == 0 && state->odd_frame == 1 && rendering_enabled()) {
+	if(state->scanline == 0 && state->dot == 0 && state->odd_frame == 1 && rendering_enabled) {
 		state->dot = 1;
 	}
 
 	//visible scanlines
-	if( state->scanline < 240 && rendering_enabled() ) {
+	if( state->scanline < 240 && rendering_enabled ) {
 		handleVisibleScanline(state);
 
 		//visible cycles
@@ -441,7 +574,7 @@ U8 PPUcycle(PPU2C02state *state) {
 			state->nmi_occurred = 0;
 		}
 
-		else if(state->dot >= 280 && state->dot <= 304 && rendering_enabled()) {
+		else if(state->dot >= 280 && state->dot <= 304 && rendering_enabled) {
 			//v: IHGF.ED CBA..... = t: IHGF.ED CBA.....
 			MMU.VRAM_address &= 1055; //1055 = 0000010000011111b
 			MMU.VRAM_address |= (MMU.t & ~1055 & ~(1<<15) );

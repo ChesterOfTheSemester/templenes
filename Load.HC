@@ -6,7 +6,9 @@ CDoc *doc_prev=Fs->put_doc;
 CTask *draw_task=NULL;
 CSprite *vid;
 CDC *gameCanvas=DCNew(320,240);
+CDC *Canvas16=DCNew(320,240);
 DCFill(gameCanvas,0);
+DCFill(Canvas16);
 
 CDC *scr_pillar = DCNew(32,200);
 DCFill(scr_pillar,0);
@@ -52,6 +54,7 @@ I64 trainer;
 I64 mapper;
 
 #include "Joypad";
+#include "Mappers";
 #include "MMU";
 #include "CPU";
 #include "PPU";
@@ -88,6 +91,11 @@ U0 resetSystem()
 
 U0 doScreenUpdate()
 {
+	if (MMU.RAM[0x2000] & (1 << 5) != 0)
+	{
+		GrBlot(gameCanvas, 0, -8, Canvas16);
+		DCFill(Canvas16);
+	}
 	if (fit_screen)
 	{
 		vid=DC2Sprite(gameCanvas);
@@ -166,6 +174,12 @@ I64 TempleNES(U8 *rom_filename)
 		//Copy the ROM into the PPU's memory
 		MemCpy(MMU.VRAM, cartridgebuffer+0x10+0x4000*numPRGROM, 0x2000*numCHRROM);
 		break;
+	case 11:
+		//Load first PRG ROM bank
+		MemCpy(MMU.RAM+0x8000, cartridgebuffer+0x10, 0x8000);
+		//Copy the ROM into the PPU's memory
+		MemCpy(MMU.VRAM, cartridgebuffer+0x10+0x4000*numPRGROM, 0x2000);
+		break;
 	default:
 		break;
 	}
@@ -187,7 +201,7 @@ I64 TempleNES(U8 *rom_filename)
 
 	draw_task = Spawn(&drawScreen,,,1);
 
-	while(!quit) {
+	while(!quit && !TG_KeyDown(SC_ESC)) {
 		WinMsUpdate;
 		KbdMsHndlr(FALSE, FALSE);
 
