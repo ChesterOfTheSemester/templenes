@@ -1,7 +1,7 @@
 # templenes
 NES Emulator for TempleOS
 
-This is a work in progress. Currently, only Mapper #0 games work, and things are buggy. Tested on bare-metal and VirtualBox 6.0, YMMV.
+This is a work in progress. Currently, only Mapper #0 and Mapper #11 games work, and things are buggy. Tested on bare-metal and VirtualBox 6.0, YMMV.
 
 The emulator runs in 320x200 256 color video mode. Since NES display resolution exceeds these boundaries, there is an option to view 1:1 (topmost pixels not visible) or Scale2Fit, which scales the image to the 320x200 viewport, albeit with loss of quality.
 
